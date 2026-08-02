@@ -53,6 +53,11 @@ func executionPlansForExecuteRoute(cfg pluginConfig, req pluginapi.ModelRouteReq
 			return nil
 		}
 		plans = append(plans, executionPlan{backend: backend})
+	case backendSearXNG:
+		if !newSearXNGClient(cfg.SearXNGURL, cfg.SearXNGAPIKey).available() {
+			return nil
+		}
+		plans = append(plans, executionPlan{backend: backend})
 	default:
 		return nil
 	}
@@ -87,6 +92,8 @@ func buildExecutionPlansInternal(cfg pluginConfig, req pluginapi.ModelRouteReque
 			})
 		case backendTavily:
 			plans = append(plans, executionPlan{backend: backend})
+		case backendSearXNG:
+			plans = append(plans, executionPlan{backend: backend})
 		default:
 			continue
 		}
@@ -98,6 +105,8 @@ func backendRunnableLenient(backend routeBackend, cfg pluginConfig, req pluginap
 	switch backend {
 	case backendTavily:
 		return newTavilyClient(cfg.TavilyAPIKeys).available()
+	case backendSearXNG:
+		return newSearXNGClient(cfg.SearXNGURL, cfg.SearXNGAPIKey).available()
 	case backendAntigravityGoogle:
 		return resolveAntigravityWebSearchTargetModel(cfg.AntigravityModel, req.RequestedModel) != ""
 	case backendCodexWebSearch, backendXAIWebSearch:
@@ -128,6 +137,8 @@ func executionPlansForRoute(cfg pluginConfig, req pluginapi.ModelRouteRequest, r
 		case backendXAIWebSearch:
 			plans = append(plans, executionPlan{backend: b, model: resolveXAIWebSearchTargetModel(cfg.XAIModel)})
 		case backendTavily:
+			plans = append(plans, executionPlan{backend: b})
+		case backendSearXNG:
 			plans = append(plans, executionPlan{backend: b})
 		}
 	}
@@ -191,6 +202,21 @@ func runOrderedExecutionPlans(ctx context.Context, exec pluginapi.ExecutorReques
 				payload, headers, errRun = runTavilyClaudeStreamWithClient(ctx, exec, newTavilyClient(cfg.TavilyAPIKeys))
 			} else {
 				payload, headers, errRun = runTavilyClaudeWithClient(ctx, exec, newTavilyClient(cfg.TavilyAPIKeys))
+			}
+			if errRun != nil {
+				lastErr = errRun
+				continue
+			}
+			recordBackendSuccess(backend)
+			return payload, headers, nil
+		case backendSearXNG:
+			var payload []byte
+			var headers http.Header
+			var errRun error
+			if stream {
+				payload, headers, errRun = runSearXNGClaudeStreamWithClient(ctx, exec, newSearXNGClient(cfg.SearXNGURL, cfg.SearXNGAPIKey))
+			} else {
+				payload, headers, errRun = runSearXNGClaudeWithClient(ctx, exec, newSearXNGClient(cfg.SearXNGURL, cfg.SearXNGAPIKey))
 			}
 			if errRun != nil {
 				lastErr = errRun

@@ -13,6 +13,7 @@ func defaultWebSearchFallbackChain() []routeBackend {
 		backendCodexWebSearch,
 		backendXAIWebSearch,
 		backendTavily,
+		backendSearXNG,
 	}
 }
 
@@ -33,6 +34,16 @@ func tryRouteBackend(backend routeBackend, cfg pluginConfig, req pluginapi.Model
 			Handled:    true,
 			TargetKind: pluginapi.ModelRouteTargetSelf,
 			Reason:     "claude_code_web_search_tavily",
+		}, true
+	case backendSearXNG:
+		client := newSearXNGClient(cfg.SearXNGURL, cfg.SearXNGAPIKey)
+		if !client.available() {
+			return pluginapi.ModelRouteResponse{Handled: false, Reason: "searxng_unavailable"}, false
+		}
+		return pluginapi.ModelRouteResponse{
+			Handled:    true,
+			TargetKind: pluginapi.ModelRouteTargetSelf,
+			Reason:     "claude_code_web_search_searxng",
 		}, true
 	case backendAntigravityGoogle:
 		if !hasProvider(req.AvailableProviders, "antigravity") {

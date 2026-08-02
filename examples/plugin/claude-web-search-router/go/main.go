@@ -79,6 +79,7 @@ const (
 	backendCodexWebSearch    routeBackend = "codex_web_search"
 	backendXAIWebSearch      routeBackend = "xai_web_search"
 	backendTavily            routeBackend = "tavily"
+	backendSearXNG           routeBackend = "searxng"
 	backendDefaultProvider   routeBackend = "default_provider"
 )
 
@@ -108,6 +109,8 @@ type pluginConfig struct {
 	DefaultProvider      string   `yaml:"default_provider"`
 	DefaultProviderModel string   `yaml:"default_provider_model"`
 	TavilyAPIKeys        []string `yaml:"tavily_api_keys"`
+	SearXNGURL           string   `yaml:"searxng_url"`
+	SearXNGAPIKey        string   `yaml:"searxng_api_key"`
 	RequireWebSearchOnly bool     `yaml:"require_web_search_only"`
 }
 
@@ -244,6 +247,8 @@ func decodeConfig(raw []byte) (pluginConfig, error) {
 	cfg.XAIModel = strings.TrimSpace(cfg.XAIModel)
 	cfg.DefaultProvider = strings.ToLower(strings.TrimSpace(cfg.DefaultProvider))
 	cfg.DefaultProviderModel = strings.TrimSpace(cfg.DefaultProviderModel)
+	cfg.SearXNGURL = strings.TrimSpace(cfg.SearXNGURL)
+	cfg.SearXNGAPIKey = strings.TrimSpace(cfg.SearXNGAPIKey)
 	return cfg, nil
 }
 
@@ -267,14 +272,16 @@ func pluginRegistration() registration {
 				{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "When false, the router declines all Claude web_search requests."},
 				{Name: "route", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{
 					string(backendFallback), string(backendAntigravityGoogle), string(backendCodexWebSearch),
-					string(backendXAIWebSearch), string(backendTavily), string(backendDefaultProvider),
-				}, Description: "Backend for Claude Code web_search. fallback (default): antigravity → codex → xai → tavily."},
+					string(backendXAIWebSearch), string(backendTavily), string(backendSearXNG), string(backendDefaultProvider),
+				}, Description: "Backend for Claude Code web_search. fallback (default): antigravity → codex → xai → tavily → searxng."},
 				{Name: "antigravity_model", Type: pluginapi.ConfigFieldTypeString, Description: "Antigravity googleSearch model (empty: registry lookup, then first supports_web_search)."},
 				{Name: "codex_model", Type: pluginapi.ConfigFieldTypeString, Description: "Codex Responses model for web_search (empty defaults to gpt-5.4, never client Claude model)."},
 				{Name: "xai_model", Type: pluginapi.ConfigFieldTypeString, Description: "xAI Responses model with web_search (empty uses grok-4.3, not the client Claude model)."},
 				{Name: "default_provider", Type: pluginapi.ConfigFieldTypeString, Description: "Built-in provider key when route=default_provider."},
 				{Name: "default_provider_model", Type: pluginapi.ConfigFieldTypeString, Description: "Optional execution model on default_provider route."},
 				{Name: "tavily_api_keys", Type: pluginapi.ConfigFieldTypeArray, Description: "Tavily API keys (round-robin) when route=tavily."},
+				{Name: "searxng_url", Type: pluginapi.ConfigFieldTypeString, Description: "Base URL of a self-hosted SearXNG instance (e.g. http://localhost:8080) when route=searxng. JSON format must be enabled on the instance."},
+				{Name: "searxng_api_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional bearer token sent as Authorization when the SearXNG instance requires auth."},
 				{Name: "require_web_search_only", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Require tools to be exclusively typed web_search (matches antigravity-only path)."},
 			},
 		},
@@ -351,6 +358,28 @@ func runTavilyClaude(ctx context.Context, req pluginapi.ExecutorRequest) ([]byte
 	return runTavilyClaudeWithClient(ctx, req, newTavilyClient(loadedConfig().TavilyAPIKeys))
 }
 
+func runSearXNGClaude(ctx context.Context, req pluginapi.ExecutorRequest) ([]byte, http.Header, error) {
+	cfg := loadedConfig()
+	return runSearXNGClaudeWithClient(ctx, req, newSearXNGClient(cfg.SearXNGURL, cfg.SearXNGAPIKey))
+}
+
+func runSearXNGClaudeWithClient(ctx context.Context, req pluginapi.ExecutorRequest, client *searxngClient) ([]byte, http.Header, error) {
+	query := extractClaudeWebSearchQuery(req.OriginalRequest)
+	if query == "" {
+		query = extractClaudeWebSearchQuery(req.Payload)
+	}
+	maxResults := extractClaudeWebSearchMaxUses(req.OriginalRequest, 5)
+	hits, _, errSearch := client.search(ctx, query, maxResults)
+	if errSearch != nil {
+		return nil, nil, errSearch
+	}
+	model := strings.TrimSpace(req.Model)
+	builder := newClaudeStreamBuilder(model)
+	payload := builder.buildMessageJSON(query, hits, "")
+	headers := http.Header{"Content-Type": []string{"application/json"}}
+	return payload, headers, nil
+}
+
 func runTavilyClaudeWithClient(ctx context.Context, req pluginapi.ExecutorRequest, client *tavilyClient) ([]byte, http.Header, error) {
 	query := extractClaudeWebSearchQuery(req.OriginalRequest)
 	if query == "" {
@@ -370,6 +399,28 @@ func runTavilyClaudeWithClient(ctx context.Context, req pluginapi.ExecutorReques
 
 func runTavilyClaudeStream(ctx context.Context, req pluginapi.ExecutorRequest) ([]byte, http.Header, error) {
 	return runTavilyClaudeStreamWithClient(ctx, req, newTavilyClient(loadedConfig().TavilyAPIKeys))
+}
+
+func runSearXNGClaudeStream(ctx context.Context, req pluginapi.ExecutorRequest) ([]byte, http.Header, error) {
+	cfg := loadedConfig()
+	return runSearXNGClaudeStreamWithClient(ctx, req, newSearXNGClient(cfg.SearXNGURL, cfg.SearXNGAPIKey))
+}
+
+func runSearXNGClaudeStreamWithClient(ctx context.Context, req pluginapi.ExecutorRequest, client *searxngClient) ([]byte, http.Header, error) {
+	query := extractClaudeWebSearchQuery(req.OriginalRequest)
+	if query == "" {
+		query = extractClaudeWebSearchQuery(req.Payload)
+	}
+	maxResults := extractClaudeWebSearchMaxUses(req.OriginalRequest, 5)
+	hits, _, errSearch := client.search(ctx, query, maxResults)
+	if errSearch != nil {
+		return nil, nil, errSearch
+	}
+	model := strings.TrimSpace(req.Model)
+	builder := newClaudeStreamBuilder(model)
+	payload := builder.buildStreamWithQuery(query, hits, "")
+	headers := http.Header{"Content-Type": []string{"text/event-stream"}}
+	return payload, headers, nil
 }
 
 func runTavilyClaudeStreamWithClient(ctx context.Context, req pluginapi.ExecutorRequest, client *tavilyClient) ([]byte, http.Header, error) {

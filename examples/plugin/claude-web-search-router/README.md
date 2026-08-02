@@ -13,10 +13,10 @@ This plugin demonstrates **ModelRouter** on Claude Code built-in `web_search` re
 
 | Value                    | Behavior                                                                                                                                                                                                                                                                                                  |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fallback` (**default**) | Plugin **executor** runs **antigravity → codex → xai → tavily** (built-ins via `host.model.*`, Tavily in-plugin). On **429/503/502**, tries the next backend in the same request. Backends that fail often are **deprioritized on later requests** (in-memory penalty; no extra config). |
-| `antigravity_google` / `codex_web_search` / `xai_web_search` / `tavily` | Same orchestration for that backend’s chain member(s): execution retry + penalty apply when multiple backends are eligible. |
+| `fallback` (**default**) | Plugin **executor** runs **antigravity → codex → xai → tavily → searxng** (built-ins via `host.model.*`, Tavily/SearXNG in-plugin). On **429/503/502**, tries the next backend in the same request. Backends that fail often are **deprioritized on later requests** (in-memory penalty; no extra config). |
+| `antigravity_google` / `codex_web_search` / `xai_web_search` / `tavily` / `searxng` | Same orchestration for that backend’s chain member(s): execution retry + penalty apply when multiple backends are eligible. |
 | `default_provider`             | `default_provider` + optional `default_provider_model` via built-in AuthManager (not orchestrated).                                                                                                                                                                                                                          |
-Routing for `fallback` requires at least one runnable backend (providers in `AvailableProviders` where needed, resolvable antigravity model, or `tavily_api_keys`).
+Routing for `fallback` requires at least one runnable backend (providers in `AvailableProviders` where needed, resolvable antigravity model, `tavily_api_keys`, or `searxng_url`).
 
 ### xAI web search notes (aligned with upstream docs)
 
@@ -123,6 +123,22 @@ plugins:
       require_web_search_only: true
 ```
 
+**SearXNG only (self-hosted, no API key):**
+
+Requires a SearXNG instance with `search.formats: [html, json]` enabled in `settings.yml`.
+
+```yaml
+plugins:
+  configs:
+    claude-web-search-router:
+      enabled: true
+      priority: 20
+      route: searxng
+      searxng_url: "http://localhost:8080"
+      # searxng_api_key: "bearer-token" # optional, only if the instance is behind auth
+      require_web_search_only: true
+```
+
 **Built-in provider via `default_provider`:**
 
 ```yaml
@@ -158,12 +174,14 @@ plugins:
 | ----- | ----------- |
 | `enabled` | `false` → `Handled: false` for all web_search matches |
 | `priority` | Host plugin order for ModelRouter (higher runs earlier; see main repo plugins docs) |
-| `route` | `fallback` (default), `antigravity_google`, `codex_web_search`, `xai_web_search`, `tavily`, `default_provider` |
+| `route` | `fallback` (default), `antigravity_google`, `codex_web_search`, `xai_web_search`, `tavily`, `searxng`, `default_provider` |
 | `antigravity_model` | Antigravity execution model; never the client Claude model name |
 | `codex_model` | Codex model; empty → `gpt-5.4-mini` |
 | `xai_model` | xAI model; empty → `grok-4.3` |
 | `default_provider` / `default_provider_model` | Used when `route=default_provider` |
 | `tavily_api_keys` | Required for `route=tavily` or fallback last step |
+| `searxng_url` | Base URL of a self-hosted SearXNG instance (e.g. `http://localhost:8080`) for `route=searxng` or fallback last step |
+| `searxng_api_key` | Optional bearer token for SearXNG instances behind auth |
 | `require_web_search_only` | `true` matches Claude Code–style exclusive `web_search` tools |
 
 ## Build
