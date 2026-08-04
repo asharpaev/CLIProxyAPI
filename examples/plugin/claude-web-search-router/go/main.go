@@ -66,6 +66,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -301,28 +302,62 @@ func routeModel(raw []byte) ([]byte, error) {
 		return nil, errUnmarshal
 	}
 	cfg := loadedConfig()
+	log.WithFields(log.Fields{
+		"source_format":       req.SourceFormat,
+		"requested_model":     req.RequestedModel,
+		"stream":              req.Stream,
+		"available_providers": req.AvailableProviders,
+		"cfg_route":           cfg.Route,
+		"cfg_enabled":         cfg.Enabled,
+		"searxng_url_set":     cfg.SearXNGURL != "",
+		"tavily_keys_count":   len(cfg.TavilyAPIKeys),
+	}).Debug("claude-web-search-router: route request received")
 	if !cfg.Enabled {
+		log.Debug("claude-web-search-router: declined (plugin disabled)")
 		return okEnvelope(pluginapi.ModelRouteResponse{Handled: false})
 	}
 	if !isClaudeSourceFormat(req.SourceFormat) {
+		log.WithField("source_format", req.SourceFormat).Debug("claude-web-search-router: declined (non-claude source)")
 		return okEnvelope(pluginapi.ModelRouteResponse{Handled: false})
 	}
 	if !isClaudeCodeBuiltinWebSearchRequest(req.Body, cfg.RequireWebSearchOnly) {
+		log.Debug("claude-web-search-router: declined (not a Claude Code web_search request)")
 		return okEnvelope(pluginapi.ModelRouteResponse{Handled: false})
 	}
 	route := strings.TrimSpace(cfg.Route)
 	if isFallbackRoute(route) {
-		return okEnvelope(routeWithFallback(cfg, req.ModelRouteRequest))
+		resp := routeWithFallback(cfg, req.ModelRouteRequest)
+		log.WithFields(log.Fields{
+			"handled":     resp.Handled,
+			"target_kind": resp.TargetKind,
+			"target":      resp.Target,
+			"reason":      resp.Reason,
+		}).Info("claude-web-search-router: fallback decision")
+		return okEnvelope(resp)
 	}
 	if plans := executionPlansForRoute(cfg, req.ModelRouteRequest, route); len(plans) > 0 {
-		return okEnvelope(pluginapi.ModelRouteResponse{
+		resp := pluginapi.ModelRouteResponse{
 			Handled:    true,
 			TargetKind: pluginapi.ModelRouteTargetSelf,
 			Reason:     "claude_code_web_search_orchestrated",
-		})
+		}
+		log.WithFields(log.Fields{
+			"handled":     resp.Handled,
+			"target_kind": resp.TargetKind,
+			"reason":      resp.Reason,
+			"plans_count": len(plans),
+		}).Info("claude-web-search-router: orchestrated decision")
+		return okEnvelope(resp)
 	}
 	backend := routeBackend(route)
 	resp, ok := tryRouteBackend(backend, cfg, req.ModelRouteRequest)
+	log.WithFields(log.Fields{
+		"handled":     resp.Handled,
+		"target_kind": resp.TargetKind,
+		"target":      resp.Target,
+		"reason":      resp.Reason,
+		"ok":          ok,
+	}).Info("claude-web-search-router: single-backend decision")
 	if ok {
 		return okEnvelope(resp)
 	}

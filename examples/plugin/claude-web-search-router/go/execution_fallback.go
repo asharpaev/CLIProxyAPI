@@ -10,6 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 )
 
 type executionPlan struct {
@@ -177,6 +178,7 @@ func runWebSearchStreamWithExecutionFallback(ctx context.Context, exec pluginapi
 
 func runOrderedExecutionPlans(ctx context.Context, exec pluginapi.ExecutorRequest, hostCallbackID string, cfg pluginConfig, plans []executionPlan, stream bool) ([]byte, http.Header, error) {
 	if len(plans) == 0 {
+		log.Warn("claude-web-search-router: no execution plans available")
 		return nil, nil, fmt.Errorf("web search execution: no backend available")
 	}
 	backends := make([]routeBackend, 0, len(plans))
@@ -184,6 +186,11 @@ func runOrderedExecutionPlans(ctx context.Context, exec pluginapi.ExecutorReques
 		backends = append(backends, p.backend)
 	}
 	ordered := sortBackendsByPenalty(backends)
+	log.WithFields(log.Fields{
+		"planned_backends": backendsToString(plans),
+		"ordered_backends": backendsToStringOrdered(ordered),
+		"stream":           stream,
+	}).Info("claude-web-search-router: execution starting")
 	planByBackend := make(map[routeBackend]executionPlan, len(plans))
 	for _, p := range plans {
 		planByBackend[p.backend] = p
@@ -193,6 +200,11 @@ func runOrderedExecutionPlans(ctx context.Context, exec pluginapi.ExecutorReques
 	var lastErr error
 	for _, backend := range ordered {
 		plan := planByBackend[backend]
+		log.WithFields(log.Fields{
+			"backend": string(backend),
+			"model":   plan.model,
+			"stream":  stream,
+		}).Info("claude-web-search-router: executing backend")
 		switch backend {
 		case backendTavily:
 			var payload []byte
@@ -204,10 +216,12 @@ func runOrderedExecutionPlans(ctx context.Context, exec pluginapi.ExecutorReques
 				payload, headers, errRun = runTavilyClaudeWithClient(ctx, exec, newTavilyClient(cfg.TavilyAPIKeys))
 			}
 			if errRun != nil {
+				log.WithError(errRun).WithField("backend", string(backend)).Warn("claude-web-search-router: backend failed")
 				lastErr = errRun
 				continue
 			}
 			recordBackendSuccess(backend)
+			log.WithField("backend", string(backend)).Info("claude-web-search-router: backend succeeded")
 			return payload, headers, nil
 		case backendSearXNG:
 			var payload []byte
@@ -219,14 +233,20 @@ func runOrderedExecutionPlans(ctx context.Context, exec pluginapi.ExecutorReques
 				payload, headers, errRun = runSearXNGClaudeWithClient(ctx, exec, newSearXNGClient(cfg.SearXNGURL, cfg.SearXNGAPIKey))
 			}
 			if errRun != nil {
+				log.WithError(errRun).WithField("backend", string(backend)).Warn("claude-web-search-router: backend failed")
 				lastErr = errRun
 				continue
 			}
 			recordBackendSuccess(backend)
+			log.WithField("backend", string(backend)).Info("claude-web-search-router: backend succeeded")
 			return payload, headers, nil
 		default:
 			payload, status, errRun := hostModelExecuteClaude(ctx, hostCallbackID, plan.model, body, stream)
 			if errRun != nil {
+				log.WithError(errRun).WithFields(log.Fields{
+					"backend": string(backend),
+					"status":  status,
+				}).Warn("claude-web-search-router: host backend failed")
 				lastErr = errRun
 				if isRetryableHTTPStatus(hostHTTPStatusFromError(errRun)) {
 					recordBackendFailure(backend)
@@ -239,6 +259,10 @@ func runOrderedExecutionPlans(ctx context.Context, exec pluginapi.ExecutorReques
 				continue
 			}
 			recordBackendSuccess(backend)
+			log.WithFields(log.Fields{
+				"backend": string(backend),
+				"status":  status,
+			}).Info("claude-web-search-router: host backend succeeded")
 			headers := http.Header{"Content-Type": []string{"application/json"}}
 			if stream {
 				headers = http.Header{"Content-Type": []string{"text/event-stream"}}
@@ -247,8 +271,10 @@ func runOrderedExecutionPlans(ctx context.Context, exec pluginapi.ExecutorReques
 		}
 	}
 	if lastErr != nil {
+		log.WithError(lastErr).Error("claude-web-search-router: all backends exhausted")
 		return nil, nil, lastErr
 	}
+	log.Error("claude-web-search-router: all backends exhausted (no error captured)")
 	return nil, nil, fmt.Errorf("web search execution: all backends failed")
 }
 
@@ -357,4 +383,20 @@ func hostModelStreamClaude(ctx context.Context, hostCallbackID, execModel string
 func closeHostModelStream(streamID string) error {
 	_, errCall := callHost(pluginabi.MethodHostModelStreamClose, pluginapi.HostModelStreamCloseRequest{StreamID: streamID})
 	return errCall
+}
+
+func backendsToString(plans []executionPlan) []string {
+	out := make([]string, 0, len(plans))
+	for _, p := range plans {
+		out = append(out, string(p.backend))
+	}
+	return out
+}
+
+func backendsToStringOrdered(backends []routeBackend) []string {
+	out := make([]string, 0, len(backends))
+	for _, b := range backends {
+		out = append(out, string(b))
+	}
+	return out
 }
